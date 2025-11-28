@@ -1,33 +1,21 @@
-from typing import Optional, Type, Dict, Set
-
-from PySide6.QtCore import Slot, Signal, QTimer
+from typing import Optional, Set
+from PySide6.QtCore import Slot, QTimer
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QMessageBox
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QMessageBox, QFileDialog
 )
 
-# --- Core & Utils ---
 from core.serial_manager import SerialManager
 from core.parser import parse_json_message
+from core.measurement_manager import MeasurementManager 
 from ui.styles import STYLESHEET
 
-# --- DŮLEŽITÉ: Ujisti se, že máš tyto soubory na správném místě ---
 from ui.panels.sidebar import Sidebar
 from ui.panels.cards import ValueCardsPanel
 from ui.realtime_plot import RealtimePlotWidget
 from ui.dialogs.sensor_config import SensorConfigDialog
-
-# --- Měření ---
-from measurements.base import BaseMeasurement
-from measurements.streaming_measurement import StreamingTempMeasurement
-from measurements.bme_dallas_slow import BmeDallasSlowMeasurement
-
+from measurements.part_one import PartOneMeasurement 
 
 class MainWindow(QMainWindow):
-    measurement_data_signal = Signal(float, dict)
-    measurement_progress_signal = Signal(float)
-    measurement_finished_signal = Signal()
-    handshake_received_signal = Signal()
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Temp-Lab Dashboard")
@@ -35,152 +23,186 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLESHEET)
 
         self.serial_mgr = SerialManager()
-        self.current_measurement: Optional[BaseMeasurement] = None
-
-        # Filtrace senzorů (prázdná = zobrazit vše)
+        self.meas_mgr = MeasurementManager(self.serial_mgr)
         self.allowed_sensors: Set[str] = set()
+        
+        # Seznam senzorů detekovaných z ESP32 po připojení
+        self.detected_sensors: list[str] = []
 
-        self._measurement_types: Dict[str, Type[BaseMeasurement]] = {
-            "Kontinuální (Rychlé)": StreamingTempMeasurement,
-            "Dlouhodobé (Pomalé)": BmeDallasSlowMeasurement,
-        }
+        self.meas_mgr.data_received.connect(self._on_measurement_data)
+        self.meas_mgr.progress_updated.connect(self._on_measurement_progress)
+        self.meas_mgr.finished.connect(self._on_measurement_finished)
+        self.meas_mgr.error_occurred.connect(lambda msg: QMessageBox.warning(self, "Chyba", msg))
 
         self.handshake_timer = QTimer()
         self.handshake_timer.setSingleShot(True)
         self.handshake_timer.timeout.connect(self._on_handshake_timeout)
-        
-        self.handshake_received_signal.connect(self._on_handshake_ok)
-        self.measurement_data_signal.connect(self._on_measurement_data_ui)
-        self.measurement_progress_signal.connect(self._on_measurement_progress_ui)
-        self.measurement_finished_signal.connect(self._on_measurement_finished_ui)
 
         self._init_ui()
+        
+        # Init stav
+        first_type = self.meas_mgr.get_available_types()[0]
+        self._on_measurement_type_changed(first_type)
 
     def _init_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QHBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # 1. LEVÝ PANEL (Sidebar)
-        self.sidebar = Sidebar(list(self._measurement_types.keys()))
-        
-        # ZDE VZNIKALA CHYBA - Sidebar musí mít tento signál definovaný
+        # Sidebar
+        self.sidebar = Sidebar(self.meas_mgr.get_available_types())
         self.sidebar.connect_requested.connect(self._handle_connect_request)
         self.sidebar.disconnect_requested.connect(self._handle_disconnect_request)
         self.sidebar.start_measurement_clicked.connect(self._start_measurement)
         self.sidebar.stop_measurement_clicked.connect(self._stop_measurement)
         self.sidebar.sensor_settings_clicked.connect(self._open_sensor_settings)
+        self.sidebar.measurement_type_changed.connect(self._on_measurement_type_changed)
+        self.sidebar.pwm_changed.connect(self._on_pwm_changed)
+        self.sidebar.export_clicked.connect(self._on_export_clicked)
 
-        # 2. PRAVÝ PANEL
-        content_layout = QVBoxLayout()
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
+        # Content
+        right_layout = QVBoxLayout()
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
         
         self.cards_panel = ValueCardsPanel()
-        content_layout.addWidget(self.cards_panel)
+        right_layout.addWidget(self.cards_panel)
         
         self.plot_widget = RealtimePlotWidget(time_window_s=60.0)
-        content_layout.addWidget(self.plot_widget, stretch=1)
+        right_layout.addWidget(self.plot_widget, stretch=1)
 
-        main_layout.addWidget(self.sidebar)
-        main_layout.addLayout(content_layout)
+        layout.addWidget(self.sidebar)
+        layout.addLayout(right_layout)
+
+    @Slot(str)
+    def _on_measurement_type_changed(self, type_name: str):
+        # Dynamika UI
+        if type_name == PartOneMeasurement.DISPLAY_NAME:
+            self.sidebar.show_pwm_controls()
+            self.plot_widget.set_dual_axis_mode(True)
+        else:
+            self.sidebar.show_simple_controls()
+            self.plot_widget.set_dual_axis_mode(False)
+        
+        self.plot_widget.clear()
+        self.cards_panel.clear()
+
+    @Slot(str)
+    def _start_measurement(self, type_name: str):
+        self.cards_panel.clear()
+        self.plot_widget.clear()
+        self.sidebar.progress.setValue(0)
+        self.sidebar.set_measurement_running(True)
+
+        self.meas_mgr.start_measurement(type_name)
+        
+        duration = self.meas_mgr.get_duration()
+        self.plot_widget.set_time_window(60.0 if duration > 300 else duration)
 
     @Slot()
-    def _open_sensor_settings(self):
-        # Pokud soubor sensor_config.py neexistuje, zde to spadne na ImportError
-        dlg = SensorConfigDialog(self.allowed_sensors, self)
-        if dlg.exec():
-            self.allowed_sensors = dlg.get_allowed_sensors()
+    def _stop_measurement(self):
+        self.meas_mgr.stop_measurement()
 
-    # --- Ostatní metody (Connection / Measurement) ---
+    @Slot()
+    def _on_export_clicked(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "Uložit CSV", "", "CSV (*.csv)")
+        if filename:
+            if self.meas_mgr.export_data(filename):
+                QMessageBox.information(self, "OK", "Data exportována.")
+            else:
+                QMessageBox.warning(self, "Chyba", "Nelze exportovat data.")
 
+    @Slot(int, int)
+    def _on_pwm_changed(self, channel: int, value: int):
+        if self.serial_mgr.is_open():
+            self.serial_mgr.write_line(f"SET PWM {channel} {value}")
+
+    @Slot(float, dict)
+    def _on_measurement_data(self, t_s: float, values: dict):
+        if self.allowed_sensors:
+            filtered = {k: v for k, v in values.items() if k in self.allowed_sensors}
+        else:
+            filtered = values
+        if filtered:
+            self.cards_panel.update_values(filtered)
+            self.plot_widget.add_point(t_s, filtered)
+
+    @Slot(float)
+    def _on_measurement_progress(self, fraction: float):
+        val = max(0, min(100, int(fraction * 100)))
+        self.sidebar.progress.setValue(val)
+
+    @Slot()
+    def _on_measurement_finished(self):
+        self.sidebar.set_measurement_running(False)
+        QMessageBox.information(self, "Hotovo", "Měření dokončeno.")
+    
     @Slot(str)
     def _handle_connect_request(self, port: str):
         try:
             self.serial_mgr.open(port)
-            self.serial_mgr.set_line_callback(self._wait_for_handshake_callback)
+            self.serial_mgr.set_line_callback(self._wait_for_handshake)
             self.sidebar.set_waiting_state()
             self.handshake_timer.start(3000)
         except Exception as e:
-            QMessageBox.critical(self, "Chyba", f"Nelze otevřít port:\n{e}")
+            QMessageBox.critical(self, "Chyba", f"Port nelze otevřít:\n{e}")
             self.sidebar.set_connected_state(False)
 
-    @Slot()
-    def _handle_disconnect_request(self):
-        self.serial_mgr.close()
-        self.sidebar.set_connected_state(False)
-        self.sidebar.set_measurement_running(False)
-        self.cards_panel.clear()
-        self.plot_widget.clear()
-
-    def _wait_for_handshake_callback(self, line: str):
+    def _wait_for_handshake(self, line: str):
         msg = parse_json_message(line)
         if msg and msg.get("type") == "hello":
-            self.handshake_received_signal.emit()
+            # --- ZPRACOVÁNÍ DETEKOVANÝCH SENZORŮ ---
+            self.detected_sensors = []
+            
+            # 1. BME280
+            if str(msg.get("bme")).lower() == "true":
+                self.detected_sensors.append("T_BME")
+            
+            # 2. TMP117
+            if str(msg.get("tmp")).lower() == "true":
+                self.detected_sensors.append("T_TMP")
+            
+            # 3. ADC
+            if str(msg.get("adc")).lower() == "true":
+                self.detected_sensors.extend(["ADC_R", "ADC_NTC", "ESP_R", "ESP_NTC"])
+            
+            # 4. Dallas
+            try:
+                dallas_count = int(msg.get("dallas", 0))
+                for i in range(dallas_count):
+                    self.detected_sensors.append(f"T_DS{i}")
+            except: pass
+            
+            print(f"Detekováno: {self.detected_sensors}")
+            
+            QTimer.singleShot(0, self._on_handshake_ok)
 
     @Slot()
     def _on_handshake_ok(self):
         self.handshake_timer.stop()
         self.sidebar.set_connected_state(True)
-        QMessageBox.information(self, "Připojeno", "Spojení s ESP32 úspěšně navázáno.")
+        QMessageBox.information(self, "Připojeno", "Spojení navázáno.")
 
     @Slot()
     def _on_handshake_timeout(self):
         self.serial_mgr.close()
         self.sidebar.set_connected_state(False)
-        QMessageBox.warning(self, "Timeout", "ESP32 neodpovědělo včas.")
+        QMessageBox.warning(self, "Timeout", "ESP32 neodpovědělo.")
 
-    @Slot(str)
-    def _start_measurement(self, type_name: str):
-        cls = self._measurement_types.get(type_name)
-        if not cls: return
-
+    @Slot()
+    def _handle_disconnect_request(self):
+        self.meas_mgr.stop_measurement()
+        self.serial_mgr.close()
+        self.sidebar.set_connected_state(False)
+        self.sidebar.set_measurement_running(False)
         self.cards_panel.clear()
         self.plot_widget.clear()
-        self.sidebar.progress.setValue(0)
-
-        self.current_measurement = cls(self.serial_mgr)
-        if hasattr(self.current_measurement, "DURATION_S"):
-            self.plot_widget.set_time_window(self.current_measurement.DURATION_S)
-
-        self.current_measurement.set_callbacks(
-            on_data=lambda t, v: self.measurement_data_signal.emit(t, v),
-            on_progress=lambda f: self.measurement_progress_signal.emit(f),
-            on_finished=lambda: self.measurement_finished_signal.emit(),
-        )
-        self.serial_mgr.set_line_callback(self.current_measurement.handle_line)
-        self.current_measurement.start()
-        self.sidebar.set_measurement_running(True)
-
+        
     @Slot()
-    def _stop_measurement(self):
-        if self.current_measurement:
-            self.current_measurement.stop()
-        self.sidebar.set_measurement_running(False)
-
-    @Slot(float, dict)
-    def _on_measurement_data_ui(self, t_s: float, values: dict):
-        # Filtrace
-        if self.allowed_sensors:
-            filtered_values = {k: v for k, v in values.items() if k in self.allowed_sensors}
-        else:
-            filtered_values = values
-
-        if not filtered_values: return
-
-        self.cards_panel.update_values(filtered_values)
-        self.plot_widget.add_point(t_s, filtered_values)
-
-    @Slot(float)
-    def _on_measurement_progress_ui(self, fraction: float):
-        val = max(0, min(100, int(fraction * 100)))
-        self.sidebar.progress.setValue(val)
-
-    @Slot()
-    def _on_measurement_finished_ui(self):
-        self.current_measurement = None
-        self.sidebar.set_measurement_running(False)
-        QMessageBox.information(self, "Hotovo", "Měření bylo dokončeno.")
+    def _open_sensor_settings(self):
+        # Předáváme detekované senzory
+        dlg = SensorConfigDialog(self.allowed_sensors, self.detected_sensors, self)
+        if dlg.exec():
+            self.allowed_sensors = dlg.get_allowed_sensors()

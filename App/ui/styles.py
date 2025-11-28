@@ -16,18 +16,19 @@ QFrame#Sidebar {
     border-right: 1px solid #3e3e42;
 }
 
-/* --- KARTIČKY HODNOT (Upraveno - bez rámečku) --- */
+/* --- KARTIČKY HODNOT --- */
 QFrame#ValueCard {
     background-color: #2d2d30; 
     border-radius: 6px;
     border: none;
 }
 QFrame#ValueCard:hover {
-    /* Můžeme nechat zvýraznění jen barvou pozadí, nebo jemný obrys */
     background-color: #383838;
-    border: 1px solid #404040; /* Volitelné: jemný rámeček jen při najetí */
+    border: 1px solid #404040;
 }
-}
+
+/* --- OPRAVA: ZDE BYLA NADBYTEČNÁ ZÁVORKA '}' KTERÁ ZPŮSOBOVALA CHYBU --- */
+
 QLabel#ValueTitle {
     color: #007acc; /* Modrý nadpis */
     font-size: 13px;
@@ -70,13 +71,13 @@ QPushButton#BtnStop { background-color: #da3633; }
 QPushButton#BtnStop:hover { background-color: #f85149; }
 QPushButton#BtnStop:disabled { background-color: #2d2d30; color: #606060; }
 
-/* --- COMBOBOX (OPRAVA ČERNÉHO TEXTU) --- */
+/* --- COMBOBOX --- */
 QComboBox {
     background-color: #333337;
     border: 1px solid #505050;
     padding: 5px;
     border-radius: 4px;
-    color: white; /* Text v zavřeném stavu */
+    color: white;
 }
 QComboBox:hover {
     border: 1px solid #007acc;
@@ -86,10 +87,9 @@ QComboBox::drop-down {
     width: 20px;
 }
 
-/* Tady je ten trik pro rozbalovací seznam */
 QComboBox QAbstractItemView {
-    background-color: #252526; /* Tmavé pozadí seznamu */
-    color: white;              /* Bílé písmo položek */
+    background-color: #252526;
+    color: white;
     border: 1px solid #3e3e42;
     selection-background-color: #007acc;
     selection-color: white;

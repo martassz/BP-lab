@@ -16,6 +16,9 @@ struct Command {
 class SerialProtocol {
 public:
     void begin(unsigned long baud);
+    // Odesle konfiguraci pripojenych senzoru do PC
+    void sendHello(bool bme_ok, uint8_t dallas_count, bool adc_ok, bool tmp_ok);
+
     bool readCommand(Command& cmd);
 
     void sendAck(const char* cmd);

@@ -37,12 +37,14 @@ void setup() {
     bool bme_ok = bme.beginAuto();
     bool adc_ok = adc.begin();
     bool tmp_ok = tmp.begin();
+    uint8_t dallas_count = dallas.getSensorCount();
 
     proto.begin(115200);
 
+    // ODESLÁNÍ KONFIGURACE DO PC (aby věděl, co má zobrazit v Sidebaru)
+    proto.sendHello(bme_ok, dallas_count, adc_ok, tmp_ok);
+
     Serial.println("=== Temp-Lab ESP32 Ready ===");
-    Serial.printf("HW Check -> BME: %d, ADC: %d, TMP: %d\n", bme_ok, adc_ok, tmp_ok);
-    Serial.printf("Dallas count: %d\n", dallas.getSensorCount());
 }
 
 void loop() {

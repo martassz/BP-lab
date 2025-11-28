@@ -14,7 +14,7 @@ class StreamingTempMeasurement(BaseMeasurement):
     Data: Parsuje JSON a posílá do grafu.
     """
 
-    DURATION_S = 10.0  # Délka měření v sekundách
+    DURATION_S = 10.0  # Délka měření v sekundách (pro progress bar)
     NO_DATA_TIMEOUT_S = 5.0
 
     def __init__(self, serial_mgr):
@@ -34,10 +34,14 @@ class StreamingTempMeasurement(BaseMeasurement):
             return
 
         self._stop_flag = False
-        self._t0_ms = None
+        
+        # --- ZÁSADNÍ OPRAVA: RESET ČASOVAČE ---
+        # Zajistí, že graf začne kreslit od 0.0s
+        self._t0_ms = None 
+        # --------------------------------------
+        
         self._last_data_time = time.time()
 
-        # === ZDE SE DĚJE STARTOVÁNÍ MĚŘENÍ ===
         print("Odesílám příkaz START...")
         self.serial.write_line("START")
         
@@ -58,27 +62,17 @@ class StreamingTempMeasurement(BaseMeasurement):
         """
         Zpracovává řádky během běžícího měření.
         """
-        # --- DIAGNOSTIKA START ---
-        clean_line = line.strip()
-        print(f"RAW DATA Z ESP: '{clean_line}'") # Uvidíme přesně, co chodí
-        # --- DIAGNOSTIKA END ---
-
         # 1. Parsování JSON
         msg = parse_json_message(line)
         
-        # Pokud parsování selhalo (msg je None), vypíšeme proč
+        # Pokud parsování selhalo (msg je None)
         if msg is None:
-            if clean_line: # Ignorujeme prázdné řádky
-                print("-> Chyba: Toto není platný JSON!")
             return
 
-        # Pokud je to potvrzení příkazu
-        if msg.get("type") == "ack":
-            print(f"-> ESP POTVRDILO PŘÍKAZ: {msg.get('cmd')}")
-            return
-        
-        if msg.get("type") == "error":
-            print(f"-> ESP HLÁSÍ CHYBU: {msg.get('msg')}")
+        # Pokud je to potvrzení příkazu nebo chyba
+        if msg.get("type") in ("ack", "error"):
+            if msg.get("type") == "error":
+                print(f"-> ESP HLÁSÍ CHYBU: {msg.get('msg')}")
             return
 
         # 2. Extrakce dat
@@ -86,7 +80,7 @@ class StreamingTempMeasurement(BaseMeasurement):
         
         # Pokud se nepovedlo vytáhnout data
         if not data:
-            print(f"-> JSON OK, ale žádná data k vykreslení. Obsah: {msg}")
+            # print(f"-> JSON OK, ale žádná data k vykreslení. Obsah: {msg}")
             return
 
         # Data přišla, aktualizujeme čas watchdogu
@@ -94,15 +88,21 @@ class StreamingTempMeasurement(BaseMeasurement):
 
         # 3. Výpočet času pro graf
         t_ms = msg.get("t_ms")
+        
         if isinstance(t_ms, (int, float)):
+            # První vzorek v měření určí "nulu"
             if self._t0_ms is None:
                 self._t0_ms = float(t_ms)
+            
+            # Čas od začátku měření v sekundách (relativní k prvnímu vzorku)
+            # max(0.0, ...) je pojistka, aby čas nebyl záporný (kdyby náhodou přišel paket mimo pořadí)
             t_s = max(0.0, (float(t_ms) - self._t0_ms) / 1000.0)
         else:
+            # Fallback, kdyby ESP neposlalo t_ms (použije čas PC)
             t_s = self.now_s()
 
         # 4. Odeslání do UI
-        print(f"-> DATA OK: Čas={t_s:.2f}s, Hodnoty={data}")
+        # print(f"-> DATA OK: Čas={t_s:.2f}s, Hodnoty={data}")
         self.emit_data(t_s, data)
 
     def _watchdog_loop(self):

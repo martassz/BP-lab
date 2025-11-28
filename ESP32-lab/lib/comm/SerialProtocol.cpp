@@ -4,7 +4,16 @@ void SerialProtocol::begin(unsigned long baud) {
     Serial.begin(baud);
     unsigned long start = millis();
     while (!Serial && (millis() - start < 2000));
-    Serial.println("{\"type\":\"hello\",\"device\":\"temp-lab-v2\"}");
+    // Hello posíláme až ručně z main.cpp
+}
+
+void SerialProtocol::sendHello(bool bme_ok, uint8_t dallas_count, bool adc_ok, bool tmp_ok) {
+    Serial.print("{\"type\":\"hello\",\"device\":\"temp-lab-v2\"");
+    Serial.print(",\"bme\":"); Serial.print(bme_ok ? "true" : "false");
+    Serial.print(",\"dallas\":"); Serial.print(dallas_count);
+    Serial.print(",\"adc\":"); Serial.print(adc_ok ? "true" : "false");
+    Serial.print(",\"tmp\":"); Serial.print(tmp_ok ? "true" : "false");
+    Serial.println("}");
 }
 
 bool SerialProtocol::readCommand(Command& cmd) {
