@@ -1,45 +1,37 @@
 #pragma once
-
 #include <Arduino.h>
-#include "../sensors/DallasSensor.h"  // kvůli DallasBus
+#include "../sensors/DallasSensor.h"
 
 enum class CommandType {
-    None,
-    Start,
-    Stop,
-    SetRate
+    None, Start, Stop, SetRate, SetPwm 
 };
 
 struct Command {
     CommandType type = CommandType::None;
-    float rateHz = 0.0f;  // platné jen pro SetRate
+    float rateHz = 0.0f;
+    int pwmChannel = 0;    // 0 = Topení, 1 = Chlazení
+    float pwmValue = 0.0f; // 0-100 %
 };
 
 class SerialProtocol {
 public:
     void begin(unsigned long baud);
-
-    // Přečte z příchozího seriáku jeden příkaz (pokud je k dispozici).
-    // Vrací true, pokud naplnil 'cmd' něčím jiným než CommandType::None.
     bool readCommand(Command& cmd);
 
-    // Potvrzení nastavení vzorkovací frekvence
-    void sendAckSetRate(float rateHz);
-
-    // Obecné ACK na příkaz (START/STOP/...)
     void sendAck(const char* cmd);
-
-    // Chybová zpráva
+    void sendAckSetRate(float rateHz);
     void sendError(const char* msg);
 
-    // Datová zpráva s měřením (JSON)
+    // Odesílání dat (upraveno na T_TMP a mV)
     void sendData(uint32_t t_ms,
                   float t_bme,
-                  DallasBus& dallas);
+                  DallasBus& dallas,
+                  float mv_ads_res, float mv_ads_ntc,
+                  float mv_esp_res, float mv_esp_ntc,
+                  float t_tmp);
 
 private:
     String _buffer;
-    static const size_t MAX_BUFFER = 256; // ochrana proti přetečení
-
+    static const size_t MAX_BUFFER = 256;
     void processLine(const String& line, Command& cmd);
 };
