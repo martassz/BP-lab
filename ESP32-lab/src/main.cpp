@@ -3,90 +3,82 @@
 
 #include "BmeSensor.h"
 #include "DallasSensor.h"
+#include "AdcSensor.h"
+#include "TmpSensor.h"
 #include "SerialProtocol.h"
+#include "../lib/actuators/ActuatorController.h"
+#include "../lib/logic/CommandDispatcher.h"
 
-// Porty
-static const uint8_t I2C_SDA_PIN = 21;
-static const uint8_t I2C_SCL_PIN = 22;
-static const uint8_t DALLAS_PIN  = 4;
+// I2C a OneWire Piny
+static const uint8_t I2C_SDA = 21;
+static const uint8_t I2C_SCL = 22;
+static const uint8_t PIN_ONEWIRE = 4;
 
+// 1. Instance hardwaru
 BmeSensor bme;
-DallasBus dallas(DALLAS_PIN);
+DallasBus dallas(PIN_ONEWIRE);
+AdcSensor adc;
+TmpSensor tmp;
+ActuatorController actuators;
 SerialProtocol proto;
 
-// Stav měření
-static bool     g_running    = false;
-static float    g_rate_hz    = 2.0f;      // výchozí frekvence
-static uint32_t g_last_ms    = 0;
+// 2. Logika aplikace (propojení s HW)
+CommandDispatcher dispatcher(proto, actuators);
 
-void applyCommand(const Command& cmd) {
-    switch (cmd.type) {
-        case CommandType::Start:
-            g_running = true;
-            proto.sendAck("start");
-            break;
-
-        case CommandType::Stop:
-            g_running = false;
-            proto.sendAck("stop");
-            break;
-
-        case CommandType::SetRate:
-            if (cmd.rateHz > 0.0f && cmd.rateHz <= 1000.0f) {
-                g_rate_hz = cmd.rateHz;
-                proto.sendAckSetRate(g_rate_hz);
-            } else {
-                proto.sendError("invalid_set_rate_range");
-            }
-            break;
-
-        case CommandType::None:
-        default:
-            break;
-    }
-}
+static uint32_t g_last_ms = 0;
 
 void setup() {
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    Wire.begin(I2C_SDA, I2C_SCL);
 
-    bool bme_ok = bme.beginAuto();
+    actuators.begin();
     dallas.begin();
+    
+    // Statusy inicializace
+    bool bme_ok = bme.beginAuto();
+    bool adc_ok = adc.begin();
+    bool tmp_ok = tmp.begin();
 
     proto.begin(115200);
 
-    // Info log
-    Serial.println("=== Temp-lab ESP32 ready ===");
-    Serial.print("BME280: ");
-    Serial.println(bme_ok ? "OK" : "NENI");
-    Serial.print("Dallas senzoru: ");
-    Serial.println(dallas.getSensorCount());
-    Serial.println("Ocekava se JSON protokol: HELLO, SET RATE, START, STOP, DATA...");
-    Serial.println("=====================================");
+    Serial.println("=== Temp-Lab ESP32 Ready ===");
+    Serial.printf("HW Check -> BME: %d, ADC: %d, TMP: %d\n", bme_ok, adc_ok, tmp_ok);
+    Serial.printf("Dallas count: %d\n", dallas.getSensorCount());
 }
 
 void loop() {
-    // 1) Zpracování příkazů z PC
+    // A) Příkazy
     Command cmd;
     if (proto.readCommand(cmd)) {
-        applyCommand(cmd);
+        dispatcher.apply(cmd);
     }
 
-    // 2) Periodické měření a odesílání dat
-    if (g_running && g_rate_hz > 0.0f) {
+    // B) Měření (pokud běží)
+    if (dispatcher.isRunning() && dispatcher.getRateHz() > 0.0f) {
+        
         uint32_t now = millis();
-        uint32_t period_ms = (uint32_t)(1000.0f / g_rate_hz);
+        uint32_t period = (uint32_t)(1000.0f / dispatcher.getRateHz());
+        if (period == 0) period = 1;
 
-        if (period_ms == 0) {
-            period_ms = 1;
-        }
-
-        if (now - g_last_ms >= period_ms) {
+        if (now - g_last_ms >= period) {
             g_last_ms = now;
 
+            // 1. Čtení
             float t_bme = bme.readTemperatureC();
-            proto.sendData(now, t_bme, dallas);
+            float t_tmp = tmp.readTemperatureC();
+            
+            // Napětí v mV (konstanty z AdcSensor.h)
+            float mv_ads_r   = adc.readAdsMilliVolts(AdcSensor::ADS_CH_RESISTOR);
+            float mv_ads_ntc = adc.readAdsMilliVolts(AdcSensor::ADS_CH_NTC);
+            float mv_esp_r   = adc.readEspMilliVolts(AdcSensor::PIN_ESP_RESISTOR);
+            float mv_esp_ntc = adc.readEspMilliVolts(AdcSensor::PIN_ESP_NTC);
+
+            // 2. Odeslání (předáváme i objekt dallas pro vnitřní vyčtení)
+            proto.sendData(now, t_bme, dallas, 
+                           mv_ads_r, mv_ads_ntc, 
+                           mv_esp_r, mv_esp_ntc, 
+                           t_tmp);
         }
     }
-
+    
     delay(1);
 }
