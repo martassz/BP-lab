@@ -3,10 +3,11 @@ from PySide6.QtWidgets import (
     QLabel, QHBoxLayout, QScrollArea, QWidget
 )
 from PySide6.QtCore import Qt
-from typing import Set
+from typing import Set, List, Dict
 
 class SensorConfigDialog(QDialog):
-    def __init__(self, allowed_sensors: Set[str], parent=None):
+    # ZDE BYLA CHYBA: Chyběl parametr available_sensors v __init__
+    def __init__(self, allowed_sensors: Set[str], available_sensors: List[str], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Výběr aktivních senzorů")
         self.setFixedSize(350, 450)
@@ -21,8 +22,8 @@ class SensorConfigDialog(QDialog):
             QLabel { color: #aaaaaa; }
         """)
 
-        # Uložíme si, co bylo povoleno při otevření
         self.result_sensors = set(allowed_sensors)
+        self.available_sensors = available_sensors # Seznam klíčů (např. ["T_BME", "T_DS0"...])
         self._checkboxes = {}
 
         self._init_ui()
@@ -30,11 +31,10 @@ class SensorConfigDialog(QDialog):
     def _init_ui(self):
         layout = QVBoxLayout(self)
 
-        lbl = QLabel("Vyberte senzory, které chcete zobrazovat a ukládat.\nOstatní data budou ignorována.")
+        lbl = QLabel("Vyberte senzory pro zobrazení a logování.\nZobrazují se pouze senzory detekované ESP32.")
         lbl.setWordWrap(True)
         layout.addWidget(lbl)
         
-        # Scroll area pro seznam senzorů
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("background-color: #252526; border: 1px solid #3e3e42; border-radius: 4px;")
@@ -43,19 +43,31 @@ class SensorConfigDialog(QDialog):
         self.checks_layout = QVBoxLayout(container)
         self.checks_layout.setSpacing(5)
         
-        # --- DEFINICE ZNÁMÝCH SENZORŮ ---
-        # Tady definujeme to, co "víme předem"
-        known_sensors = [
-            ("T_BME", "Teplota Vzduchu (BME280)"),
-            ("T_DS0", "Senzor DS18B20 #1"),
-            ("T_DS1", "Senzor DS18B20 #2"),
-            ("T_DS2", "Senzor DS18B20 #3"),
-            ("T_DS3", "Senzor DS18B20 #4"),
-        ]
+        # Mapa hezkých názvů
+        PRETTY_NAMES = {
+            "T_BME": "Teplota Vzduchu (BME280)",
+            "T_TMP": "Referenční (TMP117)",
+            "ADC_R": "Napětí Rezistor (ADC)",
+            "ADC_NTC": "Napětí NTC (ADC)",
+            "ESP_R": "Napětí Rezistor (ESP)",
+            "ESP_NTC": "Napětí NTC (ESP)",
+        }
 
-        for key, name in known_sensors:
+        # Pokud nemáme žádné info (např. chyba komunikace), dáme aspoň default
+        sensor_list = self.available_sensors if self.available_sensors else ["T_BME", "T_DS0"]
+
+        for key in sensor_list:
+            # Zkusíme najít hezký název, jinak vygenerujeme
+            name = PRETTY_NAMES.get(key)
+            if not name:
+                if key.startswith("T_DS"):
+                    idx = key.replace("T_DS", "")
+                    name = f"Senzor DS18B20 #{int(idx)+1}"
+                else:
+                    name = key # Fallback
+
             cb = QCheckBox(name)
-            # Pokud je senzor v povolených (nebo je list prázdný = vše povoleno), zaškrtneme
+            # Pokud je seznam povolených prázdný, bereme to jako "vše povoleno"
             is_checked = (not self.result_sensors) or (key in self.result_sensors)
             cb.setChecked(is_checked)
             self.checks_layout.addWidget(cb)
@@ -65,17 +77,15 @@ class SensorConfigDialog(QDialog):
         scroll.setWidget(container)
         layout.addWidget(scroll)
 
-        # Tlačítka
         btn_layout = QHBoxLayout()
         btn_save = QPushButton("Uložit a Zavřít")
-        btn_save.clicked.connect(self.accept) # Zavře dialog s výsledkem Accepted
+        btn_save.clicked.connect(self.accept)
         btn_layout.addStretch()
         btn_layout.addWidget(btn_save)
         
         layout.addLayout(btn_layout)
 
     def get_allowed_sensors(self) -> Set[str]:
-        """Vrátí set klíčů (např. {'T_BME', 'T_DS0'}), které jsou zaškrtnuté"""
         allowed = set()
         for key, cb in self._checkboxes.items():
             if cb.isChecked():

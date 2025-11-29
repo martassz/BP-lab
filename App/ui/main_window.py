@@ -1,5 +1,5 @@
 from typing import Optional, Set
-from PySide6.QtCore import Slot, QTimer
+from PySide6.QtCore import Slot, QTimer, Signal  # <-- Signal musí být importován
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QMessageBox, QFileDialog
 )
@@ -16,6 +16,9 @@ from ui.dialogs.sensor_config import SensorConfigDialog
 from measurements.part_one import PartOneMeasurement 
 
 class MainWindow(QMainWindow):
+    # --- DEFINICE SIGNÁLŮ ---
+    handshake_received_signal = Signal() # <-- TOTO CHYBĚLO
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Temp-Lab Dashboard")
@@ -26,7 +29,6 @@ class MainWindow(QMainWindow):
         self.meas_mgr = MeasurementManager(self.serial_mgr)
         self.allowed_sensors: Set[str] = set()
         
-        # Seznam senzorů detekovaných z ESP32 po připojení
         self.detected_sensors: list[str] = []
 
         self.meas_mgr.data_received.connect(self._on_measurement_data)
@@ -34,15 +36,20 @@ class MainWindow(QMainWindow):
         self.meas_mgr.finished.connect(self._on_measurement_finished)
         self.meas_mgr.error_occurred.connect(lambda msg: QMessageBox.warning(self, "Chyba", msg))
 
+        # Nyní už tento signál existuje a půjde propojit
+        self.handshake_received_signal.connect(self._on_handshake_ok)
+
         self.handshake_timer = QTimer()
         self.handshake_timer.setSingleShot(True)
         self.handshake_timer.timeout.connect(self._on_handshake_timeout)
 
         self._init_ui()
         
-        # Init stav
-        first_type = self.meas_mgr.get_available_types()[0]
-        self._on_measurement_type_changed(first_type)
+        # Ošetření prázdného slovníku typů měření
+        available_types = self.meas_mgr.get_available_types()
+        if available_types:
+            first_type = available_types[0]
+            self._on_measurement_type_changed(first_type)
 
     def _init_ui(self):
         central = QWidget()
@@ -51,7 +58,6 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Sidebar
         self.sidebar = Sidebar(self.meas_mgr.get_available_types())
         self.sidebar.connect_requested.connect(self._handle_connect_request)
         self.sidebar.disconnect_requested.connect(self._handle_disconnect_request)
@@ -62,7 +68,6 @@ class MainWindow(QMainWindow):
         self.sidebar.pwm_changed.connect(self._on_pwm_changed)
         self.sidebar.export_clicked.connect(self._on_export_clicked)
 
-        # Content
         right_layout = QVBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
@@ -78,7 +83,6 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_measurement_type_changed(self, type_name: str):
-        # Dynamika UI
         if type_name == PartOneMeasurement.DISPLAY_NAME:
             self.sidebar.show_pwm_controls()
             self.plot_widget.set_dual_axis_mode(True)
@@ -151,24 +155,16 @@ class MainWindow(QMainWindow):
             self.sidebar.set_connected_state(False)
 
     def _wait_for_handshake(self, line: str):
+        # Běží ve vlákně SerialManageru
         msg = parse_json_message(line)
         if msg and msg.get("type") == "hello":
-            # --- ZPRACOVÁNÍ DETEKOVANÝCH SENZORŮ ---
             self.detected_sensors = []
-            
-            # 1. BME280
             if str(msg.get("bme")).lower() == "true":
                 self.detected_sensors.append("T_BME")
-            
-            # 2. TMP117
             if str(msg.get("tmp")).lower() == "true":
                 self.detected_sensors.append("T_TMP")
-            
-            # 3. ADC
             if str(msg.get("adc")).lower() == "true":
                 self.detected_sensors.extend(["ADC_R", "ADC_NTC", "ESP_R", "ESP_NTC"])
-            
-            # 4. Dallas
             try:
                 dallas_count = int(msg.get("dallas", 0))
                 for i in range(dallas_count):
@@ -177,7 +173,8 @@ class MainWindow(QMainWindow):
             
             print(f"Detekováno: {self.detected_sensors}")
             
-            QTimer.singleShot(0, self._on_handshake_ok)
+            # Emitujeme signál, který bezpečně přejde do hlavního vlákna GUI
+            self.handshake_received_signal.emit()
 
     @Slot()
     def _on_handshake_ok(self):
@@ -202,7 +199,6 @@ class MainWindow(QMainWindow):
         
     @Slot()
     def _open_sensor_settings(self):
-        # Předáváme detekované senzory
         dlg = SensorConfigDialog(self.allowed_sensors, self.detected_sensors, self)
         if dlg.exec():
             self.allowed_sensors = dlg.get_allowed_sensors()

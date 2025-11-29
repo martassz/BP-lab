@@ -3,7 +3,7 @@
 bool AdcSensor::begin() {
     analogReadResolution(12); // ESP32 interně 12 bitů
     
-    if (!ads.begin()) {
+    if (!ads.begin(0x49)) {
         return false;
     }
     // GAIN_TWOTHIRDS: +/- 6.144V (1 bit = 0.1875 mV)

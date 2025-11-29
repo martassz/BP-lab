@@ -26,6 +26,7 @@ class Sidebar(QFrame):
         # Inicializace referencí na dynamické prvky pro bezpečnost
         self.rb_heater = None
         self.rb_cooler = None
+        self.slider_pwm = None # Přidána reference na slider
         
         self._init_ui(measurement_types)
 
@@ -162,9 +163,10 @@ class Sidebar(QFrame):
             if widget:
                 widget.deleteLater()
         
-        # Vyčistíme reference, aby na ně nikdo nesahal
+        # Vyčistíme reference
         self.rb_heater = None
         self.rb_cooler = None
+        self.slider_pwm = None # Reset reference na slider
         
         self.btn_export.hide()
 
@@ -246,28 +248,18 @@ class Sidebar(QFrame):
             self.btn_connect.clicked.connect(self._on_disconnect_click)
             self.btn_start.setEnabled(True)
             self.lbl_status.setText("Připojeno k ESP32")
-            # Povolíme tlačítko (pro jistotu)
             self.btn_connect.setEnabled(True)
         else:
             self.btn_connect.setText("Připojit k ESP")
             self.btn_connect.setStyleSheet("")
             self.combo_ports.setEnabled(True)
-            
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(False)
-            
             try: self.btn_connect.clicked.disconnect()
             except: pass
             self.btn_connect.clicked.connect(self._on_connect_click)
             self.lbl_status.setText("Odpojeno")
-            
-            # --- ZDE BYLA CHYBA: Musíme tlačítko znovu povolit! ---
-            self.btn_connect.setEnabled(True) 
-
-    def set_waiting_state(self):
-        self.btn_connect.setText("Čekám...")
-        self.btn_connect.setEnabled(False) # Tady se vypne
-        self.combo_ports.setEnabled(False)
+            self.btn_connect.setEnabled(True)
 
     def set_measurement_running(self, running: bool):
         self.btn_start.setEnabled(not running)
@@ -275,12 +267,15 @@ class Sidebar(QFrame):
         self.combo_type.setEnabled(not running)
         self.btn_sensors.setEnabled(not running)
         
-        # Bezpečné ovládání Radio Buttonů - kontrolujeme, zda existují a nejsou smazané
+        # --- ZMĚNA: Zablokování PWM ovládání ---
+        # Bezpečné ovládání Radio Buttonů a Slideru
         try:
             if self.rb_heater and not self.rb_heater.isHidden():
                 self.rb_heater.setEnabled(not running)
             if self.rb_cooler and not self.rb_cooler.isHidden():
                 self.rb_cooler.setEnabled(not running)
+            if self.slider_pwm and not self.slider_pwm.isHidden():
+                self.slider_pwm.setEnabled(not running)
         except RuntimeError:
             # Widgety byly smazány C++ stranou, ale Python reference ještě žije
             pass
@@ -291,6 +286,11 @@ class Sidebar(QFrame):
         else:
             self.lbl_status.setText("Připraveno")
             self.lbl_status.setStyleSheet("color: #808080; font-size: 11px;")
+
+    def set_waiting_state(self):
+        self.btn_connect.setText("Čekám...")
+        self.btn_connect.setEnabled(False)
+        self.combo_ports.setEnabled(False)
 
     def _on_connect_click(self):
         port = self.combo_ports.currentText()

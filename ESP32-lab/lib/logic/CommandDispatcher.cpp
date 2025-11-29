@@ -1,6 +1,9 @@
 #include "CommandDispatcher.h"
 
 void CommandDispatcher::apply(const Command& cmd) {
+    // Jakýkoliv příkaz resetuje watchdog
+    _lastCommandTime = millis();
+
     switch (cmd.type) {
         case CommandType::Start:
             _isRunning = true;
@@ -11,6 +14,10 @@ void CommandDispatcher::apply(const Command& cmd) {
             _isRunning = false;
             _actuators.stopAll();
             _proto.sendAck("stop");
+            break;
+        
+        case CommandType::Ping:
+            // Jen resetuje časovač (už se stalo výše), neposíláme ACK
             break;
 
         case CommandType::SetRate:
@@ -34,3 +41,15 @@ void CommandDispatcher::apply(const Command& cmd) {
         default: break;
     }
 }
+
+// --- TOTO JE TA CHYBĚJÍCÍ ČÁST ---
+void CommandDispatcher::checkSafetyTimeout() {
+    // Pokud běžíme a dlouho nepřišel příkaz (více než 3 sekundy), vypneme to
+    if (_isRunning && (millis() - _lastCommandTime > SAFETY_TIMEOUT_MS)) {
+        _isRunning = false;
+        _actuators.stopAll();
+        // Volitelně pošleme error, aby PC vědělo, proč se to vyplo
+        // _proto.sendError("safety_timeout"); 
+    }
+}
+// ---------------------------------
