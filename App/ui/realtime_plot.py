@@ -83,14 +83,21 @@ class RealtimePlotWidget(QWidget):
         # Reset legendy
         if self._legend:
             try:
+                # Pokusíme se bezpečně odebrat starou legendu ze scény
                 if self._legend.scene():
                     self._legend.scene().removeItem(self._legend)
             except Exception:
                 pass
             
-            self._legend = self._plot_item.addLegend(offset=(10, 10))
-            self._legend.setBrush(pg.mkBrush(0, 0, 0, 150))
-            self._legend.setLabelTextColor("#FFFFFF")
+        # --- OPRAVA ---
+        # Musíme explicitně říct PlotItemu, že legenda už neexistuje.
+        # Jinak addLegend() vrátí tu starou (smazanou) instanci.
+        self._plot_item.legend = None 
+        
+        # Vytvoření nové legendy
+        self._legend = self._plot_item.addLegend(offset=(10, 10))
+        self._legend.setBrush(pg.mkBrush(0, 0, 0, 150))
+        self._legend.setLabelTextColor("#FFFFFF")
 
         self._plot_widget.setXRange(0, self._time_window, padding=0.02)
 
@@ -145,7 +152,7 @@ class RealtimePlotWidget(QWidget):
         self._time_window = seconds
 
     def _create_curve(self, key: str):
-        # Použití centrální funkce
+        # Použití centrální funkce pro název
         pretty_name = get_sensor_name(key)
         
         color = self._assign_color(len(self._curves))
