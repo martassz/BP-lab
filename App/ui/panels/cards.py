@@ -3,7 +3,15 @@ from PySide6.QtWidgets import (
     QLabel, QScrollArea
 )
 from PySide6.QtCore import Qt
-from ui.realtime_plot import RealtimePlotWidget
+
+# Importujeme funkci pro hezké názvy (z nového souboru core/sensors.py)
+# Pokud soubor ještě nemáš, použijeme fallback na starou metodu z grafu,
+# ale doporučuji vytvořit core/sensors.py jak bylo v plánu.
+try:
+    from core.sensors import get_sensor_name
+except ImportError:
+    from ui.realtime_plot import RealtimePlotWidget
+    get_sensor_name = RealtimePlotWidget.format_sensor_name
 
 class ValueCardsPanel(QWidget):
     def __init__(self, parent=None):
@@ -36,8 +44,11 @@ class ValueCardsPanel(QWidget):
     def update_values(self, values: dict):
         for key, val in values.items():
             unit = "°C"
-            if key in ["ADC_R", "ADC_NTC", "ESP_R", "ESP_NTC"] or key.startswith("V_"):
-                unit = "V"
+            
+            # --- ZDE SE MĚNÍ JEDNOTKY ---
+            # Identifikace napěťových senzorů podle klíče
+            if key.startswith("V_") or key.startswith("ADC") or key.startswith("ESP"):
+                unit = "mV"  # Změna z "V" na "mV"
             elif key.startswith("PWM"):
                 unit = "%"
             
@@ -56,11 +67,12 @@ class ValueCardsPanel(QWidget):
         self._labels.clear()
 
     def _create_card(self, key: str, initial_text: str):
-        pretty_name = RealtimePlotWidget.format_sensor_name(key)
+        # Použijeme sjednocenou funkci pro název senzoru
+        pretty_name = get_sensor_name(key)
 
         frame = QFrame()
         frame.setObjectName("ValueCard")
-        frame.setFixedWidth(140)
+        frame.setFixedWidth(170)
         
         l = QVBoxLayout(frame)
         l.setContentsMargins(10, 8, 10, 8)

@@ -1,5 +1,5 @@
 from typing import Optional, Set
-from PySide6.QtCore import Slot, QTimer, Signal  # <-- Signal musí být importován
+from PySide6.QtCore import Slot, QTimer, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QMessageBox, QFileDialog
 )
@@ -16,14 +16,17 @@ from ui.dialogs.sensor_config import SensorConfigDialog
 from measurements.part_one import PartOneMeasurement 
 
 class MainWindow(QMainWindow):
-    # --- DEFINICE SIGNÁLŮ ---
-    handshake_received_signal = Signal() # <-- TOTO CHYBĚLO
+    handshake_received_signal = Signal()
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Temp-Lab Dashboard")
         self.resize(1200, 750)
         self.setStyleSheet(STYLESHEET)
+
+        # Proměnné pro odložené nastavení PWM
+        self._pending_pwm_channel = 0
+        self._pending_pwm_value = 0
 
         self.serial_mgr = SerialManager()
         self.meas_mgr = MeasurementManager(self.serial_mgr)
@@ -36,7 +39,6 @@ class MainWindow(QMainWindow):
         self.meas_mgr.finished.connect(self._on_measurement_finished)
         self.meas_mgr.error_occurred.connect(lambda msg: QMessageBox.warning(self, "Chyba", msg))
 
-        # Nyní už tento signál existuje a půjde propojit
         self.handshake_received_signal.connect(self._on_handshake_ok)
 
         self.handshake_timer = QTimer()
@@ -45,7 +47,6 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
         
-        # Ošetření prázdného slovníku typů měření
         available_types = self.meas_mgr.get_available_types()
         if available_types:
             first_type = available_types[0]
@@ -83,6 +84,10 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_measurement_type_changed(self, type_name: str):
+        # Vyčistit graf při změně typu
+        self.plot_widget.clear()
+        self.cards_panel.clear()
+
         if type_name == PartOneMeasurement.DISPLAY_NAME:
             self.sidebar.show_pwm_controls()
             self.plot_widget.set_dual_axis_mode(True)
@@ -90,17 +95,27 @@ class MainWindow(QMainWindow):
             self.sidebar.show_simple_controls()
             self.plot_widget.set_dual_axis_mode(False)
         
-        self.plot_widget.clear()
-        self.cards_panel.clear()
+        # Metoda set_scrolling_mode odstraněna, graf se nyní vždy roztahuje
 
     @Slot(str)
     def _start_measurement(self, type_name: str):
         self.cards_panel.clear()
         self.plot_widget.clear()
         self.sidebar.progress.setValue(0)
-        self.sidebar.set_measurement_running(True)
+        
+        # --- Příprava argumentů pro konkrétní měření ---
+        kwargs = {}
+        if type_name == PartOneMeasurement.DISPLAY_NAME:
+            # Jen PartOneMeasurement umí zpracovat tyto argumenty
+            kwargs = {
+                "pwm_channel": self._pending_pwm_channel,
+                "pwm_value": self._pending_pwm_value
+            }
 
-        self.meas_mgr.start_measurement(type_name)
+        self.sidebar.set_measurement_running(True)
+        
+        # Předáme parametry manageru -> ten je předá konstruktoru měření
+        self.meas_mgr.start_measurement(type_name, **kwargs)
         
         duration = self.meas_mgr.get_duration()
         self.plot_widget.set_time_window(60.0 if duration > 300 else duration)
@@ -113,15 +128,17 @@ class MainWindow(QMainWindow):
     def _on_export_clicked(self):
         filename, _ = QFileDialog.getSaveFileName(self, "Uložit CSV", "", "CSV (*.csv)")
         if filename:
-            if self.meas_mgr.export_data(filename):
+            # Předáváme allowed_sensors pro filtrování
+            if self.meas_mgr.export_data(filename, self.allowed_sensors):
                 QMessageBox.information(self, "OK", "Data exportována.")
             else:
-                QMessageBox.warning(self, "Chyba", "Nelze exportovat data.")
+                QMessageBox.warning(self, "Chyba", "Nelze exportovat data (žádná data k dispozici?).")
 
     @Slot(int, int)
     def _on_pwm_changed(self, channel: int, value: int):
-        if self.serial_mgr.is_open():
-            self.serial_mgr.write_line(f"SET PWM {channel} {value}")
+        # Jen uložíme hodnotu, odeslání řeší samotná třída měření po startu
+        self._pending_pwm_channel = channel
+        self._pending_pwm_value = value
 
     @Slot(float, dict)
     def _on_measurement_data(self, t_s: float, values: dict):
@@ -155,16 +172,20 @@ class MainWindow(QMainWindow):
             self.sidebar.set_connected_state(False)
 
     def _wait_for_handshake(self, line: str):
-        # Běží ve vlákně SerialManageru
         msg = parse_json_message(line)
         if msg and msg.get("type") == "hello":
             self.detected_sensors = []
+            
+            # --- ZMĚNA: Přidání do seznamu pod správnými klíči ---
             if str(msg.get("bme")).lower() == "true":
                 self.detected_sensors.append("T_BME")
             if str(msg.get("tmp")).lower() == "true":
                 self.detected_sensors.append("T_TMP")
+                
             if str(msg.get("adc")).lower() == "true":
-                self.detected_sensors.extend(["ADC_R", "ADC_NTC", "ESP_R", "ESP_NTC"])
+                # Názvy klíčů musí odpovídat tomu, co posílá ESP v sendData
+                self.detected_sensors.extend(["V_ADS_R", "V_ADS_NTC", "V_ESP_R", "V_ESP_NTC"])
+                
             try:
                 dallas_count = int(msg.get("dallas", 0))
                 for i in range(dallas_count):
@@ -172,8 +193,6 @@ class MainWindow(QMainWindow):
             except: pass
             
             print(f"Detekováno: {self.detected_sensors}")
-            
-            # Emitujeme signál, který bezpečně přejde do hlavního vlákna GUI
             self.handshake_received_signal.emit()
 
     @Slot()
